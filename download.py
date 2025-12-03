@@ -8,9 +8,9 @@ import os
 ################### script for downloading music from youtube (m4a format) ###########
 ######################################################################################
 
-#url = 'https://www.youtube.com/watch?v=D-Q_BDCJRiY&list=RDD-Q_BDCJRiY' MIJU
+url = 'https://www.youtube.com/watch?v=D-Q_BDCJRiY&list=RDD-Q_BDCJRiY' # MIJU
 #url = 'https://www.youtube.com/watch?v=JkyaQnLEjto&list=RDD-Q_BDCJRiY&index=12'
-url = 'https://www.youtube.com/watch?v=OlTWpTdqpRc'
+#url = 'https://www.youtube.com/watch?v=OlTWpTdqpRc'
 yt = YouTube(url, on_progress_callback=on_progress)
 
 def best_audio_itag():

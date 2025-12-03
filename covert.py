@@ -14,10 +14,11 @@ AudioSegment.ffprobe = r"C:\ffmpeg\bin\ffprobe.exe"
 # Force ffmpeg/ffprobe availability
 os.environ["PATH"] += os.pathsep + r"C:\ffmpeg\bin"
 
-audio_file = r"C:/Users/Milka/Documents/FMF_2025_26/MatematikaZRacunalnikom/Sinestezija-fraktalov-in-elektronske-glasbe/music/MIJUxMKDSL-Metatron(BlissInc.Remix).webm"
-output_file = r"audio_samples/MIJUxMKDSL-Metatron(BlissInc.Remix).wav"
+audio_file = r"C:/Users/Milka/Documents/FMF_2025_26/MatematikaZRacunalnikom/Sinestezija-fraktalov-in-elektronske-glasbe/music/MIJU x MKDSL - Metatron (Bliss Inc. Remix) [HEAD008].m4a"
+output_file = r"music/MIJUxMKDSL-Metatron(BlissInc.Remix).wav"
 
 audio = AudioSegment.from_file(audio_file)
 audio.export(output_file, format="wav")
 
 print("Conversion successful!")
+
