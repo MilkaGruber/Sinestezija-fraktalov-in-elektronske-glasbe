@@ -12,10 +12,14 @@ import pickle
 from datetime import datetime
 from collections import deque
 
-# Inicializacija pygame
+##################################################################################
+####################### Analiza zvoka ############################################
+##################################################################################
+
+# Inicializacija pygame - uporabimo za predvajanje zvoka
 try:
     pygame.init()
-    # Poskusi inicializirati mixer
+    # Poskusi inicializirati audio-mixer
     try:
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
     except:
@@ -25,19 +29,32 @@ try:
             try:
                 pygame.mixer.init()
             except:
-                print("⚠ Mixer ni inicializiran - predvajanje brez zvoka")
-    print("✓ Pygame inicializiran")
+                print("Audio-mixer ni inicializiran - predvajanje brez zvoka")
+    print("Pygame uspešno inicializiran")
 except Exception as e:
-    print(f"⚠ Napaka pri inicializaciji pygame: {e}")
+    print(f"Napaka pri inicializaciji pygame: {e}")
 
 class AudioAnalyzer:
-    """Razred za analizo glasbe vnaprej"""
+    """Razred, v katerem analiziramo glasbeno datoteko."""
     def __init__(self, audio_file):
         self.audio_file = audio_file
         self.analyzed_data = None
         
     def analyze_audio(self):
-        """Analizira glasbo in vrne vse podatke za celotno skladbo"""
+        """Funkcija, ki iz glasbene datoteke najde
+            - 'duration': float (trajanje skladbe v sekundah)
+            - 'sample_rate': int (vzorčna frekvenca v Hz)
+            - 'tempo': float  (tempo skladbe v BPM)
+            - 'beat_times': list of float (časi beatov v sekundah)
+            - 'onset_times': list of float (časi začetkov posameznih zvokov v sekundah)
+            - 'rms': list of float (normalizirana RMS po segmentih)
+            - 'rms_times': list of float (časi posameznih RMS segmentov)
+            - 'spectral_centroid': list of float (normaliziran spektralni centroid po segmentih)
+            - 'centroid_times': list of float (časi segmentov spektralnega centroida)
+            - 'mel_spectrogram': list of list of float (normaliziran Mel spektrogram) 
+            - 'total_samples': int (skupno število vzorcev v audio datoteki)
+            - 'audio_file': str (ime/audio datoteka, ki je bila analizirana)
+        """
         print(f"Analiziram glasbo: {self.audio_file}")
         
         try:
@@ -45,14 +62,14 @@ class AudioAnalyzer:
             y, sr = librosa.load(self.audio_file, sr=22050)
             duration = librosa.get_duration(y=y, sr=sr)
             
-            print(f"  ✓ Naloženo: {duration:.2f}s, {sr}Hz, {len(y)} vzorcev")
+            print(f"Naloženo: {duration:.2f}s, {sr}Hz, {len(y)} vzorcev")
             
-            # Izračunaj spektrogram
-            print("  Izračunavam spektrogram...")
+            # Izračunaj spektrogram (osnovna frekvenčna analiza)
+            print("Izračunavam spektrogram...")
             S = np.abs(librosa.stft(y))
             
             # Beat tracking
-            print("  Iskam tempo in beat-e...")
+            print("Analiza beatov...")
             tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
             beat_times = librosa.frames_to_time(beat_frames, sr=sr)
             
@@ -60,14 +77,14 @@ class AudioAnalyzer:
             if isinstance(tempo, np.ndarray):
                 tempo = tempo[0] if len(tempo) > 0 else 120.0
             
-            # Onset detection
-            print("  Iskam onset-e...")
+            # Onset detection (zaznavanje nastopa novih zvokov) - marker za spremembo
+            print("Iščem onsete...")
             onset_frames = librosa.onset.onset_detect(y=y, sr=sr, backtrack=True)
             onset_times = librosa.frames_to_time(onset_frames, sr=sr)
             
-            # Izračunaj RMS (volumen)
-            print("  Izračunavam volumen...")
-            hop_length = 512
+            # Izračunaj volumen (Root Mean Square)
+            print("Izračunavam volumen...")
+            hop_length = 512 # dolžina koraka na katerem računamo "povprečje"
             rms = librosa.feature.rms(y=y, hop_length=hop_length)[0]
             rms_times = librosa.frames_to_time(range(len(rms)), sr=sr, hop_length=hop_length)
             
@@ -114,29 +131,40 @@ class AudioAnalyzer:
                 'audio_file': self.audio_file
             }
             
-            print(f"✓ Analiza končana. Trajanje: {duration:.2f}s, Tempo: {tempo:.1f} BPM")
-            print(f"  Beat-ov: {len(beat_times)}, Onset-ov: {len(onset_times)}")
+            print(f"Analiza končana. Trajanje: {duration:.2f}s, Tempo: {tempo:.1f} BPM")
+            print(f"# Beat-ov: {len(beat_times)}, # Onset-ov: {len(onset_times)}")
             return self.analyzed_data
             
         except Exception as e:
-            print(f"❌ Napaka pri analizi glasbe: {e}")
+            print(f"Napaka pri analizi glasbe: {e}")
             import traceback
             traceback.print_exc()
             return None
     
     def get_audio_features_at_time(self, time_sec):
-        """Vrne vse značilnosti glasbe za dani čas"""
+        """Vrne slovar značilnosti glasbe v danem trenutku:
+            - 'time': float (čas v sekundah)
+            - 'volume': float (glasnost (RMS) v trenutku)
+            - 'brightness': float (spektralni centroid (barva zvoka) v trenutku)
+            - 'is_beat': bool (ali je v tem trenutku beat)
+            - 'is_onset': bool (ali se začne nov zvok (onset))
+            - 'low_energy': float (energija nizkih frekvenc)
+            - 'mid_energy': float (energija srednjih frekvenc)
+            - 'high_energy': float (energija visokih frekvenc)
+            - 'combined_energy': float (povprečna energija vseh frekvenc)
+            - 'progress': float (delež skladbe, ki je že pretekel (0.0–1.0))
+        """
         if self.analyzed_data is None:
-            print("Še nismo analizirali glasbe. Začenjam analizo...")
+            print("Glasba ni bila zaznana. Poženem funkcijo analyze_audio...")
             if not self.analyze_audio():
                 return self.get_default_features(time_sec)
             
         data = self.analyzed_data
         
-        # Preveri časovne meje
+        # Preverimo, če je dan čas v pravih časovnih mejah
         time_sec = max(0, min(time_sec, data['duration'] - 0.1))
         
-        # Najbližji indeksi za različne časovne vrste
+        # Najde najbljižni indeks za trenutek, ki nas zanima
         def find_nearest_idx(array, value):
             return np.argmin(np.abs(np.array(array) - value))
         
@@ -208,6 +236,10 @@ class AudioAnalyzer:
             'progress': 0.0
         }
 
+##################################################################################
+####################### Risanje fraktalov ########################################
+##################################################################################
+
 class FractalGenerator:
     """Razred za generiranje različnih vrst fraktalov - BOLJŠA KAKOVOST"""
     
@@ -219,7 +251,7 @@ class FractalGenerator:
         self.scale = 300  # Večji scale za boljše fraktale
         self.quality = quality  # "low", "medium", "high"
         
-        # Nastavitve glede na kakovost
+        # Nastavitve števila iteracij glede na željeno kakovost
         if quality == "low":
             self.base_iterations = 30
             self.particle_count = 60
@@ -389,7 +421,7 @@ class FractalGenerator:
         return surface
     
     def particle_system(self, features, time, particle_count=None):
-        """Ustvari partikelski sistem z BOLJŠO KAKOVOSTJO"""
+        """Ustvari sistem delcev z BOLJŠO KAKOVOSTJO"""
         if particle_count is None:
             particle_count = self.particle_count
             
@@ -635,7 +667,7 @@ class PrecomputedFractals:
         print("Analiziram glasbo...")
         audio_data = self.audio_analyzer.analyze_audio()
         if audio_data is None:
-            print("❌ Analiza glasbe ni uspela! Uporabljam testne podatke...")
+            print("Analiza glasbe ni uspela! Uporabljam testne podatke...")
             duration = 180.0  # 3 minute za test
         else:
             duration = audio_data['duration']
@@ -668,7 +700,7 @@ class PrecomputedFractals:
             total_frames = min(max_frames, int(duration * self.fps))
         
         print(f"\nIzračunavam {total_frames} okvirjev (~{total_frames/self.fps:.1f}s)...")
-        print("To lahko traja nekaj minut. Prosimo, počakajte...")
+        print("To lahko traja nekaj minut...")
         
         # Za vsak časovni okvir
         start_time = pygame.time.get_ticks()
@@ -739,10 +771,10 @@ class PrecomputedFractals:
                 pickle.dump(cache_data, f, protocol=pickle.HIGHEST_PROTOCOL)
             
             file_size = os.path.getsize('fractal_cache.pkl') / (1024*1024)
-            print(f"✓ Cache shranjen: fractal_cache.pkl ({file_size:.1f} MB)")
+            print(f"Cache shranjen: fractal_cache.pkl ({file_size:.1f} MB)")
             return True
         except Exception as e:
-            print(f"❌ Napaka pri shranjevanju cache: {e}")
+            print(f"Napaka pri shranjevanju cache: {e}")
             return False
     
     def load_from_cache(self, max_frames=None):
@@ -763,7 +795,7 @@ class PrecomputedFractals:
                 print(f"✓ Naloženo {len(self.fractal_sequence)} okvirjev iz fractal_cache.pkl")
                 return True
             except Exception as e:
-                print(f"❌ Napaka pri nalaganju .pkl cache: {e}")
+                print(f"Napaka pri nalaganju .pkl cache: {e}")
         
         # Če .pkl ne obstaja, preveri .npz
         if os.path.exists('fractal_cache.npz'):
@@ -796,9 +828,9 @@ class PrecomputedFractals:
                 print(f"✓ Naloženo {len(self.fractal_sequence)} okvirjev iz fractal_cache.npz")
                 return True
             except Exception as e:
-                print(f"❌ Napaka pri nalaganju .npz cache: {e}")
+                print(f"Napaka pri nalaganju .npz cache: {e}")
         
-        print("⚠ Cache ni najden")
+        print("Cache ni najden")
         return False
 
 class MusicFractalPlayer:
@@ -812,7 +844,7 @@ class MusicFractalPlayer:
             self.screen = pygame.display.set_mode((self.width, self.height))
             pygame.display.set_caption(f"Fraktali v ritmu glasbe [{quality.upper()}]")
         except Exception as e:
-            print(f"❌ Napaka pri ustvarjanju okna: {e}")
+            print(f"Napaka pri ustvarjanju okna: {e}")
             self.screen = None
         
         self.clock = pygame.time.Clock()
@@ -851,16 +883,16 @@ class MusicFractalPlayer:
             
         try:
             pygame.mixer.music.load(self.audio_file)
-            print(f"✓ Glasba naložena: {os.path.basename(self.audio_file)}")
+            print(f"Glasba naložena: {os.path.basename(self.audio_file)}")
             return True
         except Exception as e:
-            print(f"⚠ Napaka pri nalaganju glasbe: {e}")
+            print(f"Napaka pri nalaganju glasbe: {e}")
             return False
     
     def precompute(self, max_frames=None):
         """Izračuna vse fraktale vnaprej"""
         if self.screen is None:
-            print("⚠ Ustvarjam začasno okno za izračun...")
+            print("Ustvarjam začasno okno za izračun...")
             try:
                 self.screen = pygame.display.set_mode((1, 1), pygame.NOFRAME)
             except:
@@ -874,7 +906,7 @@ class MusicFractalPlayer:
     def run(self):
         """Zaženi glavno zanko"""
         if not self.fractal_sequence:
-            print("❌ Nobeni fraktali niso bili izračunami.")
+            print("Fraktali niso bili izračunani.")
             return
         
         # Naloži glasbo
@@ -888,9 +920,9 @@ class MusicFractalPlayer:
         print(f"Kakovost: {self.quality.upper()}")
         
         if music_loaded:
-            print("✓ Glasba pripravljena")
+            print("Glasba pripravljena")
         else:
-            print("⚠ Brez glasbe (samo vizualizacija)")
+            print("Brez glasbe (samo vizualizacija)")
         
         print("\nKontrolne tipke:")
         print("  ESC: Izhod")
@@ -907,6 +939,7 @@ class MusicFractalPlayer:
         
         # Glavna zanka
         while self.running:
+            #print("I'm in the loop")
             current_time = pygame.time.get_ticks()
             frame_delta = current_time - last_frame_time
             self.frame_times.append(frame_delta)
@@ -1037,9 +1070,9 @@ def main():
     try:
         import librosa
         import numpy
-        print("✓ Vse knjižnice na voljo")
+        print("Vse knjižnice na voljo")
     except ImportError as e:
-        print(f"❌ Manjkajoča knjižnica: {e}")
+        print(f"Manjkajoča knjižnica: {e}")
         print("Namestite s: pip install pygame numpy librosa")
         return
     
@@ -1055,7 +1088,7 @@ def main():
             size = os.path.getsize(file_path) / (1024*1024)
             print(f"  {i}. {file} ({size:.1f} MB)")
     
-    print(f"  {len(wav_files)+1}. Testni način (brez glasbe)")
+    print(f"  {len(wav_files)+1}. Testiranje")
     
     try:
         choice = input(f"\nIzberi glasbo (1-{len(wav_files)+1}): ")
@@ -1065,10 +1098,10 @@ def main():
         elif choice.isdigit() and 1 <= int(choice) <= len(wav_files):
             audio_file = os.path.join("audio", wav_files[int(choice)-1])
         else:
-            print("❌ Neveljavna izbira!")
+            print("Neveljavna izbira!")
             return
     except:
-        print("❌ Neveljavna izbira!")
+        print("Neveljavna izbira!")
         return
     
     # Kakovost
@@ -1124,7 +1157,7 @@ def main():
         # Naloži vse okvirje iz cache
         if player.precomputed.load_from_cache():
             player.fractal_sequence = player.precomputed.fractal_sequence
-            print(f"✓ Naloženo {len(player.fractal_sequence)} okvirjev")
+            print(f"Naloženo {len(player.fractal_sequence)} okvirjev")
             player.running = True
             player.run()
         else:
