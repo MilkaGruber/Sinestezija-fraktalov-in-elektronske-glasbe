@@ -8,7 +8,10 @@ import os
 ################### script for downloading music from youtube (m4a format) ###########
 ######################################################################################
 
-url = 'https://www.youtube.com/watch?v=D-Q_BDCJRiY&list=RDD-Q_BDCJRiY' # MIJU
+#url = 'https://www.youtube.com/watch?v=D-Q_BDCJRiY&list=RDD-Q_BDCJRiY' # MIJU
+#url = 'https://www.youtube.com/watch?v=j-JlQPIqdj4&list=RDj-JlQPIqdj4'  # trippy psychill Shpongle
+url = 'https://www.youtube.com/watch?v=5fSaq4c-Y28&t=328s' # The Mystery of the Yeti Part 2 - whole album, take: 31.20 - 44.00
+url = 'https://www.youtube.com/watch?v=gMsAz7HVuFA' # cel komad Total Eclipse - Freefallin Upwards
 #url = 'https://www.youtube.com/watch?v=JkyaQnLEjto&list=RDD-Q_BDCJRiY&index=12'
 #url = 'https://www.youtube.com/watch?v=OlTWpTdqpRc'
 yt = YouTube(url, on_progress_callback=on_progress)
