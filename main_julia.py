@@ -24,8 +24,8 @@ from dataclasses import dataclass
 # =========================
 FPS = 60
 
-#OUT_W, OUT_H = 1080, 1920  # vertical for Shorts
-OUT_W, OUT_H = 1920, 1080  # for computer screen
+OUT_W, OUT_H = 1080, 1920  # vertical for Shorts
+#OUT_W, OUT_H = 1920, 1080  # for computer screen
 SUPERSAMPLE = 1
 CRF = 16
 
@@ -64,27 +64,35 @@ class TrackConfig:
     PAL_RANGE_LOW: tuple
     PAL_RANGE_MID: tuple
     PAL_RANGE_HIGH: tuple
+
+    LOW_DAMPING: float # value between 0 and 1 on how much we damp the speed of orbits and zoom
+    MID_DAMPING: float
+    HIGH_DAMPING: float
     
 
 
 TRACK_PRESETS = {
-    r"audio_for_shorts/TheMysteryoftheYetiPart2_track3_shorter_segment.wav": 
-        TrackConfig(par33=0.03, par66=0.05, BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.05, # drugi yt short upload
-                    SKIP_BEAT=4, BEAT_ZOOM_THRESHOLD=0.20,
-                    COOLDOWN_LOW=6, COOLDOWN_MID=4, COOLDOWN_HIGH=4, 
-                    # range for colour, range for saturation, range for brightness
-                    PAL_RANGE_LOW=(0.08,0.38,0.75,0.85,0.85,0.95),
-                    PAL_RANGE_MID=(0.08,0.38,0.75,0.85,0.85,0.95),
-                    PAL_RANGE_HIGH=(0.8,0.98,0.85,1,0.85,0.95)
-                    ), 
     #r"audio_for_shorts/TheMysteryoftheYetiPart2_track3_shorter_segment.wav": 
-    #    TrackConfig(BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.1,
-    #                COOLDOWN_LOW=6, COOLDOWN_MID=4, COOLDOWN_HIGH=2, STARTING_PAL=np.array([0.25, 0.2, 1], dtype=np.float32),
+    #    TrackConfig(par33=0.03, par66=0.05, BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.05, # drugi yt short upload
+    #                SKIP_BEAT=4, BEAT_ZOOM_THRESHOLD=0.20,
+    #                COOLDOWN_LOW=6, COOLDOWN_MID=4, COOLDOWN_HIGH=4, 
     #                # range for colour, range for saturation, range for brightness
-    #                PAL_RANGE_LOW=(0.55, 0.78, 0.25, 0.4, 0.85,0.9),
-    #                PAL_RANGE_MID=(0.08,0.38,0.6,0.8,0.85,0.95),
-    #                PAL_RANGE_HIGH=(0.8,0.98,0.8,1,0.85,0.95)
-    #                )
+    #                PAL_RANGE_LOW=(0.08,0.38,0.75,0.85,0.85,0.95),
+    #                PAL_RANGE_MID=(0.08,0.38,0.75,0.85,0.85,0.95),
+    #                PAL_RANGE_HIGH=(0.8,0.98,0.85,1,0.85,0.95),
+    #                LOW_DAMPING=1, MID_DAMPING=1 ,HIGH_DAMPING=1,
+    #                ), 
+    r"audio_for_shorts/TheMysteryoftheYetiPart2_track3_shorter_segment.wav": 
+        TrackConfig(par33=0.055, par66=0.08,  # look at musical analysis - Onsets with trends to determine these values
+                    BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.025, 
+                    SKIP_BEAT=4, BEAT_ZOOM_THRESHOLD=0.20, # also check Smoothed Beat over time graph
+                    COOLDOWN_LOW=6, COOLDOWN_MID=5, COOLDOWN_HIGH=3, 
+                    # range for colour, range for saturation, range for brightness
+                    PAL_RANGE_LOW=(0.55, 0.78, 0.6,0.7,0.85,0.95),
+                    PAL_RANGE_MID=(0.08,0.38,0.7,0.85,0.85,0.95),
+                    PAL_RANGE_HIGH=(0.8,0.98,0.85,1,0.85,0.95),
+                    LOW_DAMPING=0.5, MID_DAMPING=0.8 ,HIGH_DAMPING=1,
+                    ), 
     r"music/TheMysteryoftheYetiPart2_track3.wav": 
         TrackConfig(par33=0.03, par66=0.05,  # look at musical analysis - Onsets with trends to determine these values
                     BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.05, 
@@ -93,7 +101,8 @@ TRACK_PRESETS = {
                     # range for colour, range for saturation, range for brightness
                     PAL_RANGE_LOW=(0.55, 0.78, 0.6,0.7,0.85,0.95),
                     PAL_RANGE_MID=(0.08,0.38,0.7,0.85,0.85,0.95),
-                    PAL_RANGE_HIGH=(0.8,0.98,0.85,1,0.85,0.95)
+                    PAL_RANGE_HIGH=(0.8,0.98,0.85,1,0.85,0.95),
+                    LOW_DAMPING=1, MID_DAMPING=1 ,HIGH_DAMPING=1,
                     ), 
                 
 }
@@ -774,13 +783,27 @@ def main():
             is_mid = (trend == 1)
             is_high = (trend == 2)
 
+            damping = 1
+            if is_low:
+                damping = track_config.LOW_DAMPING
+            if is_mid:
+                damping = track_config.MID_DAMPING
+            if is_high:
+                damping = track_config.HIGH_DAMPING
+
+            # softening of intensity of zoom: 
+            base_zoom = sceneA["logZoom0"]
+            target_zoom = sceneA["logZoom1"]
+            target_zoom = target_zoom + damping*abs(target_zoom)
+
+
             # --------------------------
             # ORBITING
             # --------------------------
             orbit_points = orbit_pointsA
             starting_orbiting_speed = track_config.STARTING_ORBITING_SPEED
             scaling_orbiting_speed = track_config.SCALING_ORBITING_SPEED
-            speed = starting_orbiting_speed +  scaling_orbiting_speed*smooth_onset  # if zoom is high, orbiting will seem too fast
+            speed = starting_orbiting_speed +  damping*scaling_orbiting_speed*smooth_onset  # if zoom is high, orbiting will seem too fast
             orbit_idx = (orbit_idx + speed) % orbit_len
             center_c = orbit_points[int(orbit_idx)]
             c = np.array([center_c.real, center_c.imag], dtype=np.float32)
@@ -807,7 +830,7 @@ def main():
                     zoom_beats_idx += 1  # move to next beat
 
             # compute interpolated logZoom
-            logZoom = lerp(sceneA["logZoom0"], sceneA["logZoom1"], zoom_prog)
+            logZoom = lerp(base_zoom, target_zoom, zoom_prog)
 
             ###########################################################################
             ##############################   SCENE CHANGE   ###########################
