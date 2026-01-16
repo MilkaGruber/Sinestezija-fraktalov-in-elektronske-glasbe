@@ -1,5 +1,4 @@
-# Sinestezija-fraktalov-in-elektronske-glasbe
-# Julia Fractal Audio Visualizer
+# Sinestezija-fraktalov-in-elektronske-glasbe (Julia Fractal Audio Visualizer)
 
 This project is a visualizer that generates Julia set fractal videos which are in sync with music.
 The animation reacts to audio beats, global energy trends, pulse and onsets. 
