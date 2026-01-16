@@ -1,18 +1,5 @@
-# fractal_julia_feedback_rhythm_record.py
-#
-# Straight-dive (NO PAN) — FIXED fractal geometry (NO rand_scene transitions)
-# - Fractal params (c0, center_lock, zoom range) stay the same for the whole video
-# - ONLY color (palette seed) changes on tier change: LOW<->MID<->HIGH (on next beat)
-# - Tempo/feel still changes via tier-based parameters (speed, pulse freq/amp, feedback, burst)
-# - No timer-based scene switching
-# - Flat/inside safeguards do NOT switch scenes; they "escape" by pulling zoom outward + force palette change
-#
-# UPDATE (too_black):
-# - Detect "too much black on screen" and ONLY zoom out (no feedback clear, no palette change)
-# - Prints when it happens (with cooldown)
-#
 # Usage:
-#   py -3.11 main_julia.py audio\Shpongle-TheSixthRevelation[Visualization]_shorter_segment.wav
+#   py -3.11 main_julia.py audio_for_shorts/TheMysteryoftheYetiPart2_track3_shorter_segment.wav
 #
 # Dependencies:
 #   py -3.11 -m pip install numpy glfw moderngl librosa imageio imageio-ffmpeg scipy
@@ -29,7 +16,7 @@ import moderngl
 
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
-
+from dataclasses import dataclass
 
 # =========================
 # QUALITY / TIMING KNOBS
@@ -41,44 +28,7 @@ OUT_W, OUT_H = 1080, 1920  # vertical for Shorts
 SUPERSAMPLE = 1
 CRF = 16
 
-# Beat influence: majhen (samo speed, ne mahanje)
-BEAT_SPEED_INFLUENCE = 0.16
-
-# Flat safeguard
-FLAT_VAR_THRESH = 24.0
-
-# Interest / inside sampling
-INTEREST_CHECK_EVERY = 0.25
-INTEREST_MIN_E = 0.014
-
-# Inside safeguard (no scene change, only "escape")
-INSIDE_FRAC_THRESH = 0.92
-INSIDE_CHECK_GRID = 9
-INSIDE_SPAN_UV = 0.22
-
-# =========================
-# TOO BLACK safeguard (ONLY zoom out + print)
-# =========================
-BLACK_STEP = 8                 # subsampling step (8 is fast enough)
-BLACK_LUM_THRESH = 8.0         # luminance below this counts as "black"
-BLACK_FRAC_THRESH = 0.92       # if >= 92% black -> trigger
-BLACK_COOLDOWN_SEC = 0.60      # print cooldown
-BLACK_ZOOM_PROG_REWIND = 0.22  # how much to rewind zoom_prog when too black
-BLACK_ZOOM_JUMP = 0.55         # how strongly to jump logZoom toward logZoom0 (0..1)
-
-# =========================
-# ZOOM BURST (beat-tier rise)
-# =========================
-ZOOM_BURST_BEATS = 6.0
-ZOOM_BURST_STRENGTH = 2.4
-ZOOM_BURST_MIN_GAP_BEATS = 4.0
-
-# Stronger mode separation (baseline)
-LOW_ZOOM_FOLLOW = 0.035
-MID_ZOOM_FOLLOW = 0.10
-HIGH_ZOOM_FOLLOW = 0.20
-
-# Feedback per tier (baseline)
+# Feedback per tier (baseline) - global parameters for drawing
 LOW_FB_AMOUNT = 0.045
 MID_FB_AMOUNT = 0.085
 HIGH_FB_AMOUNT = 0.140
@@ -87,51 +37,48 @@ LOW_FB_DECAY = 0.991
 MID_FB_DECAY = 0.9885
 HIGH_FB_DECAY = 0.9845
 
-# =========================
-# SMOOTH TIER + INSIDE-AVOID + GLOBAL SPEEDUP
-# =========================
 TIER_EMA = 0.08
 TIER_HYST = 0.10
 
 GLOBAL_SPEEDUP = 1.12
 
-INSIDE_DAMP_START = 0.78
-INSIDE_DAMP_FULL = 0.90
-INSIDE_ESCAPE_AT = 0.86
+@dataclass
+class TrackConfig:
+    # Parameters that are different for every track go here - get them by looking at musical analysis
+    # Beat influence: 
+    BEAT_SPEED_INFLUENCE: float # affects colour change
+    STRONG_PULSE_THRESH: float # adjust pulse threshold 
+    STARTING_ORBITING_SPEED: float # starting orbiting speed
+    SCALING_ORBITING_SPEED: float  # if zoom is larger, this should be smaller
+
+    COOLDOWN_LOW: int # how long does the scene cooldown before changing in low energy parts
+    COOLDOWN_MID: int # how long does the scene cooldown before changing in mid energy parts
+    COOLDOWN_HIGH: int # how long does the scene cooldown before changing in high energy parts
+
+    PAL_RANGE_LOW: tuple
+    PAL_RANGE_MID: tuple
+    PAL_RANGE_HIGH: tuple
 
 
-def frame_is_too_flat(img_uint8_hwc, step=32, var_thresh=24.0):
-    sm = img_uint8_hwc[::step, ::step, :].astype(np.float32)
-    lum = 0.2126 * sm[..., 0] + 0.7152 * sm[..., 1] + 0.0722 * sm[..., 2]
-    return float(lum.var()) < var_thresh
-
-
-def black_fraction(img_uint8_hwc, step=8, lum_thresh=8.0):
-    """
-    Vrne delež (0..1) pikslov, ki so "skoraj črni" po luminanci.
-    """
-    sm = img_uint8_hwc[::step, ::step, :].astype(np.float32)
-    lum = 0.2126 * sm[..., 0] + 0.7152 * sm[..., 1] + 0.0722 * sm[..., 2]
-    return float(np.mean(lum < float(lum_thresh)))
-
-
-def report_blackness(img_uint8_hwc, t_sec, frame_idx, beat_idx=None,
-                     step=8, lum_thresh=8.0, frac_thresh=0.92,
-                     cooldown_sec=0.6, _state={"last_print_t": -1e9}):
-    """
-    Če je preveč črno, printa (z cooldownom). Vrne (too_black, frac).
-    """
-    frac = black_fraction(img_uint8_hwc, step=step, lum_thresh=lum_thresh)
-    if frac >= float(frac_thresh):
-        if (float(t_sec) - _state["last_print_t"]) >= float(cooldown_sec):
-            _state["last_print_t"] = float(t_sec)
-            if beat_idx is None:
-                print(f"\n[BLACK] t={t_sec:7.3f}s frame={frame_idx} black={frac*100:5.1f}%")
-            else:
-                print(f"\n[BLACK] t={t_sec:7.3f}s beat={beat_idx} frame={frame_idx} black={frac*100:5.1f}%")
-        return True, frac
-    return False, frac
-
+TRACK_PRESETS = {
+    r"audio_for_shorts/TheMysteryoftheYetiPart2_track3_shorter_segment.wav": 
+        TrackConfig(BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.1,
+                    COOLDOWN_LOW=6, COOLDOWN_MID=4, COOLDOWN_HIGH=2, 
+                    # range for colour, range for saturation, range for brightness
+                    PAL_RANGE_LOW=(0.55, 0.78, 0.6, 0.75, 0.85,0.9),
+                    PAL_RANGE_MID=(0.08,0.38,0.75,0.85,0.85,0.95),
+                    PAL_RANGE_HIGH=(0.8,0.98,0.85,1,0.85,0.95)
+                    ),
+    #r"audio_for_shorts/TheMysteryoftheYetiPart2_track3_shorter_segment.wav": 
+    #    TrackConfig(BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.1,
+    #                COOLDOWN_LOW=6, COOLDOWN_MID=4, COOLDOWN_HIGH=2, STARTING_PAL=np.array([0.25, 0.2, 1], dtype=np.float32),
+    #                # range for colour, range for saturation, range for brightness
+    #                PAL_RANGE_LOW=(0.55, 0.78, 0.25, 0.4, 0.85,0.9),
+    #                PAL_RANGE_MID=(0.08,0.38,0.6,0.8,0.85,0.95),
+    #                PAL_RANGE_HIGH=(0.8,0.98,0.8,1,0.85,0.95)
+    #                )
+                
+}
 
 def clamp(x, a, b):
     return a if x < a else (b if x > b else x)
@@ -200,22 +147,21 @@ class AudioAnalyzer:
             if w % 2 == 0:
                 w += 1
             w = max(w, 3)
-#
+ 
             # smooth onset
             sm = savgol_filter(onset_env, w, 3, mode="mirror")
-#
+ 
             # adaptive thresholds
             p33 = np.percentile(sm, 10)
             p66 = np.percentile(sm, 58) # previously 60
-#
+ 
             # long-term trend
             trend = gaussian_filter1d(sm, sigma=w / 6.0)
             avg = np.convolve(trend, np.ones(w) / w, mode="same")
-#
+ 
             labels = np.zeros_like(avg, dtype=np.uint8)
             labels[avg >= p33] = 1   # medium
             labels[avg >= p66] = 2   # high
-
 
             print(f"[Trends] Low/Med={p33:.3f}  Med/High={p66:.3f}")
             return (labels, avg)
@@ -348,12 +294,6 @@ uniform vec2  u_resolution;
 uniform float u_time;
 
 uniform float u_volume;
-uniform float u_low;
-uniform float u_mid;
-uniform float u_high;
-uniform float u_beat;
-uniform float u_pulse;
-
 uniform vec2  u_c;
 uniform vec2  u_center;
 uniform float u_logZoom;
@@ -389,11 +329,11 @@ vec4 juliaSmooth(vec2 z, vec2 c, int max_iter){
     return vec4(1.0, 0.0, glow, trap);
 }
 
-vec3 rainbowBands(float x, float seed, float detail){
+vec3 rainbowBands(float x, float seed, float detail, float sat_override, float val_override){
     float hue = fract(seed + 1.35*x + 0.03*sin(0.07*u_time) + 0.05*detail);
-    float sat = 1.0;
+    float sat = sat_override;
+    float val = val_override;
 
-    float val = 1.0;
     val *= 0.70 + 0.30*sin(6.28318*(x*2.4 + 0.14*detail));
     val = clamp(val, 0.0, 1.0);
 
@@ -413,10 +353,10 @@ vec3 shade(vec4 rr, float seed){
     float detail = 0.16 * sin(2.9 * log(trap) + 0.03 * u_time);
     float k      = fract(1.85*t + bands + detail);
 
-    vec3 fr = rainbowBands(k, seed, detail);
+    vec3 fr = rainbowBands(k, seed, detail, u_pal.y, u_pal.z);
     fr *= 0.78 + 0.95*edge;
 
-    vec3 glowCol = rainbowBands(fract(k + 0.11), seed + 0.17, detail);
+    vec3 glowCol = rainbowBands(fract(k + 0.11), seed + 0.17, detail, u_pal.y, u_pal.z);
     fr += glowCol * (0.02 + 1.10*glow) * pow(edge, 1.15);
 
     fr = clamp(fr, 0.0, 1.0);
@@ -574,11 +514,13 @@ def mux_audio(video_in, audio_in, video_out):
         return False
 
 
+# =========================
+# NEW JULIA PRESET 
+# import Julia Scene presets
+# =========================
+from julia_preset_explorer import JULIA_PRESETS_2
 
-# =========================
-# NEW JULIA PRESET
-# =========================
-from julia_preset_explorer import JULIA_PRESETS
+JULIA_PRESETS = JULIA_PRESETS_2
 
 def build_orbit_circle(C, P, N):
     # we need this to build orbits for different c values in JULIA_PRESETS
@@ -598,24 +540,18 @@ def build_orbit_circle(C, P, N):
     return orbit
 
 
+def pick_pal_for_tier(rng: np.random.Generator, tier_state: int, track_config: TrackConfig) -> np.ndarray:
+    if tier_state == 0:
+        h_min, h_max, s_min, s_max, v_min, v_max = track_config.PAL_RANGE_LOW
+    elif tier_state == 1:
+        h_min, h_max, s_min, s_max, v_min, v_max = track_config.PAL_RANGE_MID
+    else:
+        h_min, h_max, s_min, s_max, v_min, v_max = track_config.PAL_RANGE_HIGH
 
-
-def pick_pal_for_tier(rng: np.random.Generator, tier_state: int) -> np.ndarray:
-    # Pastel-friendly ranges
-    if tier_state == 0:      # LOW tier: cooler pastels
-        seed = float(rng.uniform(0.55, 0.78))  # blue/cyan hues
-        sat = float(rng.uniform(0.25, 0.40))   # soft saturation
-        val = float(rng.uniform(0.85, 0.95))   # fairly bright
-    elif tier_state == 1:    # MID tier: warmer pastels
-        seed = float(rng.uniform(0.08, 0.38))  # yellow/orange/pink
-        sat = float(rng.uniform(0.25, 0.45))
-        val = float(rng.uniform(0.85, 0.95))
-    else:                    # HIGH tier: soft accent pastels
-        seed = float(rng.uniform(0.80, 0.98))  # magenta/purple
-        sat = float(rng.uniform(0.30, 0.50))
-        val = float(rng.uniform(0.85, 0.95))
-
-    return np.array([seed, sat, val], dtype=np.float32)
+    h = float(rng.uniform(h_min, h_max))
+    s = float(rng.uniform(s_min, s_max))
+    v = float(rng.uniform(v_min, v_max))
+    return np.array([h, s, v], dtype=np.float32)
 
 def get_scene(julia_presets, index, rng):
     import numpy as np
@@ -636,6 +572,7 @@ def get_scene(julia_presets, index, rng):
 # =========================
 def main():
     audio_file = sys.argv[1] if len(sys.argv) > 1 else None
+    track_config = TRACK_PRESETS[audio_file]
     if not audio_file or not os.path.isfile(audio_file):
         print("Uporaba: py -3.11 fractal_julia_feedback_rhythm_record.py audio/psy.wav")
         sys.exit(1)
@@ -712,12 +649,12 @@ def main():
     sceneA = get_scene(JULIA_PRESETS, scene_index, rng)
     scene_index = (scene_index + 1) % len(JULIA_PRESETS)
     sceneB = get_scene(JULIA_PRESETS, scene_index, rng)
-    pal = np.array([float(rng.uniform(0.55, 0.78)), float(0.15), float(0.9)], dtype=np.float32)
+    pal = pick_pal_for_tier(rng, 0, track_config)
 
     orbit_dataA = sceneA.get("orbit", None)  # new*
     orbit_dataB = sceneA.get("orbit", None)  # new*
 
-    # INITIAL orbit settings new*:
+    # INITIAL orbit settings
     orbit_points = None
     orbit_idx = 0
     orbit_len = 10000
@@ -725,24 +662,16 @@ def main():
     Ca = complex(*orbit_dataA["C"])
     Pa = complex(*orbit_dataA["P"])
     orbit_len = 128  # number of points in the orbit
-    orbit_pointsA = build_orbit_circle(Ca, Pa, orbit_len) # end new*
+    orbit_pointsA = build_orbit_circle(Ca, Pa, orbit_len) 
     Cb = complex(*orbit_dataA["C"])
     Pb = complex(*orbit_dataA["P"])
     orbit_len = 128  # number of points in the orbit
-    orbit_pointsB = build_orbit_circle(Cb, Pb, orbit_len) # end new*
+    orbit_pointsB = build_orbit_circle(Cb, Pb, orbit_len) 
 
-
-
-
-
+    # initial parameters for scene interpolation:
     scene_mix = 0.0         # 0 = sceneA, 1 = sceneB
     scene_interp_speed = 0.02  # fraction per frame (tweak)
-    scene_cooldown_sec = 3.0   # min time between scene changes
     time_since_last_scene = 0.0
-    #c0 = np.array(sceneA["c"], dtype=np.float32) # new*
-    #center = np.array(sceneA["center"], dtype=np.float32) # new*
-    #logZoom0, logZoom1 = sceneA["zoom"] # new*
-
 
     # Palette transition state (ONLY colors change)
     pal_in_transition = False
@@ -751,11 +680,8 @@ def main():
     pal_from = pal.copy()
     pal_to = pal.copy()
     pal = pal.copy()
-
     pending_pal_change = False
     pending_pal_start_beat = 0
-
-    interest_inside = 0.0
 
     writer = VideoWriter(out_noaudio, fps=FPS, crf=CRF)
     total_frames = int(math.ceil(audio.duration * FPS))
@@ -766,13 +692,11 @@ def main():
     prev_fbo = fbo_a
     next_fbo = fbo_b
 
-    flat_count = 0
     need_clear_feedback = False
 
     tier_state = 0
     tier_smooth = 0.0
     last_checked_beat = -1
-    last_burst_beat = -1e9
 
     last_logged_sec = -1
     _prev_tier_state = 0
@@ -796,12 +720,12 @@ def main():
     #### preprocessing for changing scenes to pulse  ##########
     ###########################################################
     from scipy.signal import find_peaks
-    STRONG_PULSE_THRESH = 0.95  # adjust to taste (0..1 if normalized)
-
+    
+    strong_pulse_thresh = track_config.STRONG_PULSE_THRESH
     total_frames = int(audio.duration * FPS)
     t_array = np.arange(total_frames) / FPS
     pulse_array = np.array([audio.features_at(t)["pulse"] for t in t_array])
-    pulse_peaks, _ = find_peaks(pulse_array, height=STRONG_PULSE_THRESH)
+    pulse_peaks, _ = find_peaks(pulse_array, height=strong_pulse_thresh)
     pulse_peak_times = t_array[pulse_peaks]
 
     def clear_feedback_buffers():
@@ -810,15 +734,9 @@ def main():
         fbo_b.use(); ctx.clear(0.0, 0.0, 0.0, 1.0)
         need_clear_feedback = False
 
-    def force_palette_change_now(tier_state_now: int):
-        nonlocal pal_in_transition, pal_t_beats, pal_dur_beats, pal_from, pal_to, pal
-        pal_in_transition = True
-        pal_t_beats = 0.0
-        pal_from = pal.copy()
-        pal_to = pick_pal_for_tier(rng, tier_state_now)
-        # quick snap-ish but still smooth
-        pal_dur_beats = 3.0
-
+    ###########################################################
+    ####################### MAIN LOOP  ########################
+    ###########################################################
     try:
         for frame in range(total_frames):
             if glfw.window_should_close(window):
@@ -826,10 +744,9 @@ def main():
             glfw.poll_events()
 
             t = frame / FPS
-            f = audio.features_at(t)
+            f = audio.features_at(t) # loads music features
             kick = float(f["pulse"])
             beat = float(f["beat"])
-            energy = 0.55 * f["volume"] + 0.25 * f["mid"] + 0.20 * kick
             smooth_onset = float(f["smooth_onset"])
             onset = float(f["onset"])
             trend = audio.trend_at(t) 
@@ -841,11 +758,12 @@ def main():
             # ORBITING
             # --------------------------
             orbit_points = orbit_pointsA
-            speed = 0.5 +  0.1*smooth_onset  # for closeups, to move slower -> add parameter is close
+            starting_orbiting_speed = track_config.STARTING_ORBITING_SPEED
+            scaling_orbiting_speed = track_config.SCALING_ORBITING_SPEED
+            speed = starting_orbiting_speed +  scaling_orbiting_speed*smooth_onset  # if zoom is high, orbiting will seem too fast
             orbit_idx = (orbit_idx + speed) % orbit_len
             center_c = orbit_points[int(orbit_idx)]
             c = np.array([center_c.real, center_c.imag], dtype=np.float32)
-
 
             # --------------------------
             # PULSATING ZOOM ON BEATS
@@ -879,9 +797,9 @@ def main():
             time_since_last_scene += dt
             PEAK_WINDOW = 0.020  # 20 ms tolerance
 
-            scene_cooldown_sec_low = 6
-            scene_cooldown_sec_mid = 4
-            scene_cooldown_sec_high = 2
+            scene_cooldown_sec_low = track_config.COOLDOWN_LOW 
+            scene_cooldown_sec_mid = track_config.COOLDOWN_MID 
+            scene_cooldown_sec_high = track_config.COOLDOWN_HIGH 
 
             if is_low:
                 allow = (
@@ -895,14 +813,14 @@ def main():
                         #onset >= strong_onset_in_mid and
                         any(abs(t - pt) <= PEAK_WINDOW for pt in pulse_peak_times) and
                          time_since_last_scene >= scene_cooldown_sec_mid
-                         and kick >= STRONG_PULSE_THRESH )
+                         and kick >= strong_pulse_thresh )
 
             elif is_high:
                 allow = (
                         #onset >= strong_onset_in_high and
                         any(abs(t - pt) <= PEAK_WINDOW for pt in pulse_peak_times) and
                          time_since_last_scene >= scene_cooldown_sec_high
-                         and kick >= STRONG_PULSE_THRESH )
+                         and kick >= strong_pulse_thresh )
 
             else:
                 allow = False
@@ -919,23 +837,23 @@ def main():
                 scene_mix = 0.0
                 time_since_last_scene = 0.0
 
-  
-
             # interpolate
             scene_mix = np.clip(scene_mix + scene_interp_speed, 0.0, 1.0)
             m = scene_mix
 
             # interpolate parameters
-            c0 = (1.0 - m) * sceneA["c0"] + m * sceneB["c0"]
             center = (1.0 - m) * sceneA["center"] + m * sceneB["center"]
 
-            base_logZoom   = (1.0 - scene_mix) * sceneA["logZoom0"] + scene_mix * sceneB["logZoom0"] # NEWNEWNEW
-            target_logZoom = (1.0 - scene_mix) * sceneA["logZoom1"] + scene_mix * sceneB["logZoom1"] # NEWNEWNEW
-            logZoom = lerp(base_logZoom, target_logZoom, zoom_prog) # NEWNEWNEW
+            base_logZoom   = (1.0 - scene_mix) * sceneA["logZoom0"] + scene_mix * sceneB["logZoom0"] 
+            target_logZoom = (1.0 - scene_mix) * sceneA["logZoom1"] + scene_mix * sceneB["logZoom1"] 
+            logZoom = lerp(base_logZoom, target_logZoom, zoom_prog) 
+
+            ###########################################################################
+            ##############################   COLOR CHANGE   ###########################
+            ###########################################################################
 
             # beat position
             bi, bphase = audio.beat_index_and_phase(t)
-            beats_now = float(bi) + float(bphase)
 
             # ---- tier smoothing ----
             tier_raw = int(f.get("trend", 0))
@@ -967,14 +885,6 @@ def main():
             # ---- per-beat events ----
             if bi != last_checked_beat:
                 last_checked_beat = bi
-
-                # burst trigger only on tier rise
-                if tier_state > _prev_tier_state:
-                    if (float(bi) - float(last_burst_beat)) >= ZOOM_BURST_MIN_GAP_BEATS:
-                        zoom_burst_left_beats = ZOOM_BURST_BEATS * float(tier_state - _prev_tier_state)
-                        last_burst_beat = float(bi)
-
-                # palette change on ANY tier change (up or down), scheduled on next beat
                 if tier_state != _prev_tier_state:
                     pending_pal_change = True
                     pending_pal_start_beat = bi + 1
@@ -982,16 +892,9 @@ def main():
                 _prev_tier_state = tier_state
 
             # global speedup pacing
-            beat_speed = 1.06 + BEAT_SPEED_INFLUENCE * (0.30 * kick + 0.25 * beat)
+            beat_speed_influence = track_config.BEAT_SPEED_INFLUENCE
+            beat_speed = 1.06 + beat_speed_influence * (0.30 * kick + 0.25 * beat)
             beat_speed = float(np.clip(beat_speed * GLOBAL_SPEEDUP, 1.00, 1.28))
-
-            # inside_safe from last sampled inside
-            if interest_inside <= INSIDE_DAMP_START:
-                inside_safe = 1.0
-            else:
-                t_in = (interest_inside - INSIDE_DAMP_START) / max(1e-6, (INSIDE_DAMP_FULL - INSIDE_DAMP_START))
-                inside_safe = float(np.clip(1.0 - t_in, 0.0, 1.0))
-                inside_safe = smoothstep(inside_safe)
 
             # --------------------------
             # Palette transition start (on scheduled beat)
@@ -1002,13 +905,13 @@ def main():
                 pal_in_transition = True
                 pal_t_beats = 0.0
                 pal_from = pal.copy()
-                pal_to = pick_pal_for_tier(rng, tier_state)
+                pal_to = pick_pal_for_tier(rng, tier_state, track_config)
 
                 # LOW slower, HIGH faster
                 pal_dur_beats = lerp3(10.0, 7.0, 4.0, tier01)
 
                 tier_name = "LOW" if tier_state == 0 else ("MID" if tier_state == 1 else "HIGH")
-                print(f"\n[PAL TRIG] t={t:7.3f}s  beat={bi}  tier={tier_name}  {pal_from[0]:.3f}->{pal_to[0]:.3f}")
+                print(f"\n[PALLETE CHANGE TRIG] t={t:7.3f}s  beat={bi}  tier={tier_name}  {pal_from[0]:.3f}->{pal_to[0]:.3f}")
 
             # Update palette transition
             if pal_in_transition:
@@ -1021,8 +924,9 @@ def main():
                     pal_in_transition = False
                     pal = pal_to.copy()
 
-
-
+            ###########################################################################
+            ##############################   DRAW           ###########################
+            ###########################################################################
 
             # PASS 1: fractal
             fbo_curr.use()
@@ -1032,12 +936,6 @@ def main():
             U_fr.set("u_time", float(t))
             U_fr.set("u_resolution", (float(RW), float(RH)))
             U_fr.set("u_volume", float(f["volume"]))
-            U_fr.set("u_low", float(f["low"]))
-            U_fr.set("u_mid", float(f["mid"]))
-            U_fr.set("u_high", float(f["high"]))
-            U_fr.set("u_beat", float(f["beat"]))
-            U_fr.set("u_pulse", float(kick))
-
             U_fr.set("u_c", (float(c[0]), float(c[1])))
             U_fr.set("u_center", (float(center[0]), float(center[1])))
             U_fr.set("u_logZoom", float(logZoom))
@@ -1102,13 +1000,10 @@ def main():
             prev_fbo, next_fbo = next_fbo, prev_fbo
 
             if frame % (FPS * 2) == 0:
-                elapsed = time.time() - start
                 pct = 100.0 * frame / max(1, total_frames)
                 tier_name = "LOW " if is_low else ("MID " if is_mid else "HIGH")
                 print(
                     f"\rRender: {pct:6.2f}%  frame {frame}/{total_frames}  {tier_name}  ",
-                    #f"E {interest_E:0.4f}  inside {interest_inside:0.2f}  pulseΔ {zoom_pulse_delta:+0.4f}  "
-                    #f"burst {zoom_burst_left_beats:0.2f}b  zoomProg {zoom_prog:0.2f}  elapsed {elapsed:6.1f}s",
                     end=""
                 )
 
