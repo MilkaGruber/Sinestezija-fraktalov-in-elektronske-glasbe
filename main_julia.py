@@ -1,5 +1,6 @@
 # Usage:
 #   py -3.11 main_julia.py audio_for_shorts/TheMysteryoftheYetiPart2_track3_shorter_segment.wav
+#   py -3.11 main_julia.py "music/TheMysteryoftheYetiPart2_track3.wav"
 #
 # Dependencies:
 #   py -3.11 -m pip install numpy glfw moderngl librosa imageio imageio-ffmpeg scipy
@@ -23,8 +24,8 @@ from dataclasses import dataclass
 # =========================
 FPS = 60
 
-OUT_W, OUT_H = 1080, 1920  # vertical for Shorts
-#OUT_W, OUT_H = 1920, 1080  # for computer screen
+#OUT_W, OUT_H = 1080, 1920  # vertical for Shorts
+OUT_W, OUT_H = 1920, 1080  # for computer screen
 SUPERSAMPLE = 1
 CRF = 16
 
@@ -45,11 +46,16 @@ GLOBAL_SPEEDUP = 1.12
 @dataclass
 class TrackConfig:
     # Parameters that are different for every track go here - get them by looking at musical analysis
+    par33: float
+    par66: float # thresholds for determining low, mid and high parts of the track in AudioAnalyzer
     # Beat influence: 
     BEAT_SPEED_INFLUENCE: float # affects colour change
     STRONG_PULSE_THRESH: float # adjust pulse threshold 
     STARTING_ORBITING_SPEED: float # starting orbiting speed
-    SCALING_ORBITING_SPEED: float  # if zoom is larger, this should be smaller
+
+    SCALING_ORBITING_SPEED: float  # this determines the speed of orbit changing: if zoom is larger, this should be smaller
+    SKIP_BEAT: int # if beats are too common - we zoom in on every skip_beat
+    BEAT_ZOOM_THRESHOLD: float
 
     COOLDOWN_LOW: int # how long does the scene cooldown before changing in low energy parts
     COOLDOWN_MID: int # how long does the scene cooldown before changing in mid energy parts
@@ -58,17 +64,19 @@ class TrackConfig:
     PAL_RANGE_LOW: tuple
     PAL_RANGE_MID: tuple
     PAL_RANGE_HIGH: tuple
+    
 
 
 TRACK_PRESETS = {
     r"audio_for_shorts/TheMysteryoftheYetiPart2_track3_shorter_segment.wav": 
-        TrackConfig(BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.1,
-                    COOLDOWN_LOW=6, COOLDOWN_MID=4, COOLDOWN_HIGH=2, 
+        TrackConfig(par33=0.03, par66=0.05, BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.05, # drugi yt short upload
+                    SKIP_BEAT=4, BEAT_ZOOM_THRESHOLD=0.20,
+                    COOLDOWN_LOW=6, COOLDOWN_MID=4, COOLDOWN_HIGH=4, 
                     # range for colour, range for saturation, range for brightness
-                    PAL_RANGE_LOW=(0.55, 0.78, 0.6, 0.75, 0.85,0.9),
+                    PAL_RANGE_LOW=(0.08,0.38,0.75,0.85,0.85,0.95),
                     PAL_RANGE_MID=(0.08,0.38,0.75,0.85,0.85,0.95),
                     PAL_RANGE_HIGH=(0.8,0.98,0.85,1,0.85,0.95)
-                    ),
+                    ), 
     #r"audio_for_shorts/TheMysteryoftheYetiPart2_track3_shorter_segment.wav": 
     #    TrackConfig(BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.1,
     #                COOLDOWN_LOW=6, COOLDOWN_MID=4, COOLDOWN_HIGH=2, STARTING_PAL=np.array([0.25, 0.2, 1], dtype=np.float32),
@@ -77,6 +85,16 @@ TRACK_PRESETS = {
     #                PAL_RANGE_MID=(0.08,0.38,0.6,0.8,0.85,0.95),
     #                PAL_RANGE_HIGH=(0.8,0.98,0.8,1,0.85,0.95)
     #                )
+    r"music/TheMysteryoftheYetiPart2_track3.wav": 
+        TrackConfig(par33=0.03, par66=0.05,  # look at musical analysis - Onsets with trends to determine these values
+                    BEAT_SPEED_INFLUENCE=0.16, STRONG_PULSE_THRESH=0.95, STARTING_ORBITING_SPEED=0.5, SCALING_ORBITING_SPEED=0.05, 
+                    SKIP_BEAT=4, BEAT_ZOOM_THRESHOLD=0.20, # also check Smoothed Beat over time graph
+                    COOLDOWN_LOW=6, COOLDOWN_MID=5, COOLDOWN_HIGH=3, 
+                    # range for colour, range for saturation, range for brightness
+                    PAL_RANGE_LOW=(0.55, 0.78, 0.6,0.7,0.85,0.95),
+                    PAL_RANGE_MID=(0.08,0.38,0.7,0.85,0.85,0.95),
+                    PAL_RANGE_HIGH=(0.8,0.98,0.85,1,0.85,0.95)
+                    ), 
                 
 }
 
@@ -107,6 +125,7 @@ def smoothstep(x: float) -> float:
 class AudioAnalyzer:
     def __init__(self, filename: str):
         import librosa
+        track_config = TRACK_PRESETS[filename]
 
         self.filename = filename
         self.y, self.sr = librosa.load(filename, sr=None, mono=True)
@@ -152,8 +171,8 @@ class AudioAnalyzer:
             sm = savgol_filter(onset_env, w, 3, mode="mirror")
  
             # adaptive thresholds
-            p33 = np.percentile(sm, 10)
-            p66 = np.percentile(sm, 58) # previously 60
+            p33 = track_config.par33
+            p66 = track_config.par66
  
             # long-term trend
             trend = gaussian_filter1d(sm, sigma=w / 6.0)
@@ -705,16 +724,17 @@ def main():
     #### preprocessing for zooming to the beat  ###############
     ###########################################################
     # list of times when beats exceed threshold and cooldown
-    BEAT_ZOOM_THRESHOLD = 0.25
+    beat_zoom_threshold = track_config.BEAT_ZOOM_THRESHOLD
     # PREPROCESS all beats above threshold
     zoom_beats_times = []
     for bi, bt in enumerate(audio.beat_times):
         pulse = audio.beat_pulse(bt)
-        if pulse >= BEAT_ZOOM_THRESHOLD:
+        if pulse >= beat_zoom_threshold:
             zoom_beats_times.append(bt)
     zoom_beats_idx = 0  # pointer to next beat in the main loop
-    # keep every second beat:
-    zoom_beats_times = zoom_beats_times[::2]  
+    # keep every n-th beat:
+    n = track_config.SKIP_BEAT
+    zoom_beats_times = zoom_beats_times[::n]  
 
     ###########################################################
     #### preprocessing for changing scenes to pulse  ##########
