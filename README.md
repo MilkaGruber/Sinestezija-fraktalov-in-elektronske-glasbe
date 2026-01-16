@@ -27,3 +27,10 @@ Resulting animations can be found at: www.youtube.com/@DancingFractals
 - [ModernGL](https://moderngl.readthedocs.io/) (OpenGL wrapper)
 - [imageio](https://imageio.readthedocs.io/) + [imageio-ffmpeg](https://pypi.org/project/imageio-ffmpeg/) (video writing)
 
+## Usage
+1. Download your track using `download.py` and convert it with `convert.py`.
+2. For shorter clips, use `take_fragment_track.py`.
+3. Run `music_analysis.ipynb` to analyze your track and set `TRACK_PARAMETERS` in `main_julia.py`.
+4. Run the visualizer:
+   ```bash
+   python3.11 main_julia.py <audio_file>
